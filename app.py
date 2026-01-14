@@ -67,10 +67,10 @@ if archivo:
             malla = generar_mesh(image, ancho, min_grosor, max_grosor, invertir)
             
             # (Opcional) Agregar después de generar el mesh
-            st.write("Vista previa de la geometría:")
+            #st.write("Vista previa de la geometría:")
             # Streamlit no tiene visor STL nativo simple, 
             # pero podemos mostrar la imagen de altura como referencia técnica
-            st.image(image, caption="Mapa de profundidad generado", clamp=True)
+            #st.image(image, caption="Mapa de profundidad generado", clamp=True)
 
             # Guardar en memoria temporal
             with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp:
@@ -86,4 +86,5 @@ if archivo:
                     )
 
             st.success("¡Listo!")
+
 
