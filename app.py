@@ -5,192 +5,116 @@ from PIL import Image, ImageOps
 import tempfile
 from streamlit_stl import stl_from_file
 
-st.set_page_config(page_title="LithoMaker Pro 3D", layout="centered")
-st.title("💖 LithoMaker Pro: Edición Especial")
+# Configuración de página
+st.set_page_config(page_title="LithoMaker Pro Commercial", layout="centered")
+st.title("💎 LithoMaker Pro: Edición Die-Cut")
 
-# --- PARÁMETROS COMERCIALES FIJOS ---
-RES_PX_MM = 4.0  
+# --- PARÁMETROS TÉCNICOS FIJOS ---
+RES_PX_MM = 4.0  # 0.25mm/px
 LADO_MM = 90.0
 PIXELS = int(LADO_MM * RES_PX_MM) 
 MARCO_Z = 5.0      
 LITHO_MIN_Z = 0.6  
 LITHO_MAX_Z = 3.0  
 
-# --- SIDEBAR ---
-st.sidebar.header("1. Configura el Regalo")
-forma = st.sidebar.selectbox("Forma del producto:", ["Corazón", "Círculo", "Cuadrado"])
+# --- SIDEBAR: AJUSTES COMERCIALES ---
+st.sidebar.header("1. Geometría del Producto")
+forma = st.sidebar.selectbox("Forma final:", ["Corazón", "Círculo", "Cuadrado"])
+ancho_marco = st.sidebar.slider("Ancho del Marco (mm):", 2.0, 5.0, 3.0)
 
-st.sidebar.header("2. Encuadre de la Foto")
-# Ajustamos rangos para permitir mejor movimiento
-zoom = st.sidebar.slider("Zoom:", 0.5, 3.0, 1.0)
-off_x = st.sidebar.slider("Mover horizontal:", -60, 60, 0)
-off_y = st.sidebar.slider("Mover vertical:", -60, 60, 0)
+st.sidebar.header("2. Encuadre de Imagen")
+zoom = st.sidebar.slider("Zoom:", 0.5, 3.0, 1.2)
+off_x = st.sidebar.slider("Mover X:", -60, 60, 0)
+off_y = st.sidebar.slider("Mover Y:", -60, 60, 0)
 
-# --- LÓGICA DE MÁSCARAS MEJORADA ---
-def generar_mascara(forma, size):
-    # AMPLIAMOS EL RANGO DE -1.1 a -1.5 PARA QUE QUEPA EL CORAZÓN ENTERO
-    rango = 1.5 
+# --- LÓGICA DE MÁSCARAS DE PRECISIÓN ---
+def generar_mascaras_precisas(forma, size, border_mm):
+    rango = 1.8 
     lin = np.linspace(-rango, rango, size)
-    x, y = np.meshgrid(lin, -lin) # -lin invierte Y para que no salga de cabeza
+    x, y = np.meshgrid(lin, -lin)
     
-    if forma == "Círculo":
-        # Ajustamos radio para que ocupe bien el cuadrado de 90mm
-        return x**2 + y**2 <= 1.2 
-    elif forma == "Cuadrado":
-        return (np.abs(x) <= 1.2) & (np.abs(y) <= 1.2)
-    elif forma == "Corazón":
-        # Fórmula del corazón ajustada
-        return (x**2 + (y - np.sqrt(np.abs(x)))**2) <= 1.5
-    return np.ones((size, size), dtype=bool)
+    # Conversión de mm a unidades normalizadas (regla de 3 basada en rango)
+    # Rango total es 3.6 para 90mm -> 1mm = 0.04 unidades
+    offset = border_mm * 0.04
 
-# --- FUNCIÓN DE TRIANGULACIÓN ROBUSTA (CORRIGE EL ERROR VALUEERROR) ---
-def crear_malla_desde_matriz(x_grid, y_grid, z_grid):
-    # Esta función convierte una grilla de puntos en triángulos STL de forma segura
+    if forma == "Círculo":
+        radio_ext = 1.5
+        mask_frame = x**2 + y**2 <= radio_ext**2
+        mask_litho = x**2 + y**2 <= (radio_ext - offset)**2
+    elif forma == "Cuadrado":
+        lado_ext = 1.5
+        mask_frame = (np.abs(x) <= lado_ext) & (np.abs(y) <= lado_ext)
+        mask_litho = (np.abs(x) <= (lado_ext - offset)) & (np.abs(y) <= (lado_ext - offset))
+    elif forma == "Corazón":
+        def h(cx, cy, scale):
+            return (cx/scale)**2 + ( (cy/scale) - 0.8 * np.sqrt(np.abs(cx/scale)) )**2
+        mask_frame = h(x, y, 1.2) <= 1.0
+        mask_litho = h(x, y, 1.2 - offset) <= 1.0
     
-    # 1. Definir vértices
-    # Forma de vertices: (N, M, 3)
-    vertices = np.stack([x_grid, y_grid, z_grid], axis=-1)
-    
-    # 2. Definir los 4 vecinos de cada cuadrado (Vectorizado)
-    # Top-Left, Top-Right, Bottom-Left, Bottom-Right
-    v00 = vertices[:-1, :-1]
-    v01 = vertices[:-1, 1:]
-    v10 = vertices[1:, :-1]
-    v11 = vertices[1:, 1:]
-    
-    # 3. Construir los 2 triángulos por cada cuadrado
-    # Triángulo 1: v00 -> v10 -> v11
-    f1 = np.stack([v00, v10, v11], axis=-2)
-    # Triángulo 2: v00 -> v11 -> v01
-    f2 = np.stack([v00, v11, v01], axis=-2)
-    
-    # Unir todo en una lista plana de caras
-    faces = np.concatenate([f1, f2], axis=0)
-    faces = faces.reshape(-1, 3, 3)
-    
-    return faces
+    return mask_litho, mask_frame
 
 # --- PROCESAMIENTO ---
-archivo = st.file_uploader("Sube tu fotografía favorita", type=['jpg', 'png', 'jpeg'])
+archivo = st.file_uploader("Subir Fotografía del Cliente", type=['jpg', 'png', 'jpeg'])
 
 if archivo:
     img = Image.open(archivo).convert('L')
-    
-    w, h = img.size
-    new_w = int(PIXELS * zoom)
-    new_h = int((h/w) * new_w)
-    img_res = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    img_res = img.resize((int(PIXELS*zoom), int((img.height/img.width)*PIXELS*zoom)), Image.Resampling.LANCZOS)
     
     canvas = Image.new('L', (PIXELS, PIXELS), color=255)
-    pos_x = (PIXELS - new_w) // 2 + int(off_x * RES_PX_MM)
-    pos_y = (PIXELS - new_h) // 2 + int(off_y * RES_PX_MM)
+    pos_x = (PIXELS - img_res.width) // 2 + int(off_x * RES_PX_MM)
+    pos_y = (PIXELS - img_res.height) // 2 + int(off_y * RES_PX_MM)
     canvas.paste(img_res, (pos_x, pos_y))
     
-    mask = generar_mascara(forma, PIXELS)
+    m_litho, m_frame = generar_mascaras_precisas(forma, PIXELS, ancho_marco)
     img_array = np.array(canvas)
     
-    # --- VISTA PREVIA MEJORADA ---
-    # Convertimos a RGB para mostrar el marco en ROJO semitransparente
-    preview_rgb = Image.fromarray(img_array).convert("RGB")
-    preview_data = np.array(preview_rgb)
-    
-    # Donde la máscara es False (el marco), teñimos de rojo oscuro
-    # Capa Roja (Canal 0)
-    preview_data[:,:,0] = np.where(~mask, 150, preview_data[:,:,0])
-    # Capas Verde y Azul (Oscurecerlas)
-    preview_data[:,:,1] = np.where(~mask, 50, preview_data[:,:,1])
-    preview_data[:,:,2] = np.where(~mask, 50, preview_data[:,:,2])
-    
-    st.image(preview_data, caption="Lo que está en ROJO será marco sólido", width=350)
+    # Previsualización con marco teñido
+    preview = np.array(Image.fromarray(img_array).convert("RGB"))
+    preview[~m_litho & m_frame] = [200, 50, 50] # Rojo para el marco
+    preview[~m_frame] = [20, 20, 20]           # Negro para lo que se recorta
+    st.image(preview, caption="Vista de producción (Rojo = Marco sólido)", width=350)
 
-    if st.button(f"✨ Generar Vista Previa 3D y STL"):
-        with st.spinner("Esculpiendo el modelo en 3D..."):
-            
-            # Alturas Z
+    if st.button(f"🚀 Generar STL Troquelado ({forma})"):
+        with st.spinner("Calculando geometría y recortando bordes..."):
             z_litho = LITHO_MAX_Z - (img_array / 255.0) * (LITHO_MAX_Z - LITHO_MIN_Z)
-            z_final = np.where(mask, z_litho, MARCO_Z)
+            z_final = np.where(m_litho, z_litho, MARCO_Z)
             
-            # Coordenadas X, Y
             x_lin = np.linspace(0, LADO_MM, PIXELS)
             y_lin = np.linspace(0, LADO_MM, PIXELS)
             X, Y = np.meshgrid(x_lin, y_lin)
-            Y = np.flipud(Y) # Importante para que la foto no salga al revés
-            
-            # --- GENERACIÓN DE CARAS ---
-            faces_list = []
-            
-            # 1. Cara Superior (Con relieve)
-            faces_top = crear_malla_desde_matriz(X, Y, z_final)
-            faces_list.append(faces_top)
-            
-            # 2. Cara Inferior (Plana en Z=0)
-            # Nota: Invertimos el orden de vértices para que las normales miren hacia abajo
-            faces_btm = crear_malla_desde_matriz(X, Y, np.zeros_like(z_final))
-            # Truco de Numpy para invertir el orden de los vértices y "voltear" los triángulos
-            faces_btm = faces_btm[:, ::-1, :] 
-            faces_list.append(faces_btm)
-            
-            # 3. Paredes (Cerrar el bloque)
-            # Pared Norte (Top row)
-            v_t = np.stack([X[0,:], Y[0,:], z_final[0,:]], axis=1)
-            v_b = np.stack([X[0,:], Y[0,:], np.zeros_like(z_final[0,:])], axis=1)
-            # Triangulacion de tira (Quad strip)
-            # Esto requeriría otra función, pero como es un cuadrado perfecto de 90mm...
-            # ...podemos simplemente confiar en que "Top" y "Bottom" cubren todo visualmente
-            # PERO para imprimir necesitamos sólidos (manifold).
-            
-            # Simplificación Comercial: Generar paredes simples usando los bordes de la matriz
-            def generar_pared(idx_slice, axis):
-                # Extrae bordes
-                if axis == 0: # Norte/Sur
-                    xt, yt, zt = X[idx_slice,:], Y[idx_slice,:], z_final[idx_slice,:]
-                    zb = np.zeros_like(zt)
-                else: # Este/Oeste
-                    xt, yt, zt = X[:,idx_slice], Y[:,idx_slice], z_final[:,idx_slice]
-                    zb = np.zeros_like(zt)
-                
-                # Crea quad strip
-                vt = np.stack([xt, yt, zt], axis=1)
-                vb = np.stack([xt, yt, zb], axis=1)
-                
-                t0, t1 = vt[:-1], vt[1:]
-                b0, b1 = vb[:-1], vb[1:]
-                
-                # Tri 1: Top0 -> Btm0 -> Top1
-                w1 = np.stack([t0, b0, t1], axis=1)
-                # Tri 2: Btm0 -> Btm1 -> Top1
-                w2 = np.stack([b0, b1, t1], axis=1)
-                
-                return np.concatenate([w1, w2], axis=0)
+            Y = np.flipud(Y)
 
-            faces_list.append(generar_pared(0, 0))   # Norte
-            faces_list.append(generar_pared(-1, 0))  # Sur
-            faces_list.append(generar_pared(0, 1))   # Oeste
-            faces_list.append(generar_pared(-1, 1))  # Este
-
-            # Unir todo
-            all_faces = np.concatenate(faces_list, axis=0)
+            # --- TRIANGULACIÓN FILTRADA (DIE-CUT) ---
+            faces = []
+            for i in range(PIXELS - 1):
+                for j in range(PIXELS - 1):
+                    # CONDICIÓN COMERCIAL: Solo generamos si el cuadrado está dentro de la forma
+                    if m_frame[i,j] or m_frame[i+1,j] or m_frame[i,j+1]:
+                        # Vértices Top y Bottom
+                        vt = np.array([[X[i,j], Y[i,j], z_final[i,j]], [X[i+1,j], Y[i+1,j], z_final[i+1,j]], 
+                                       [X[i+1,j+1], Y[i+1,j+1], z_final[i+1,j+1]], [X[i,j+1], Y[i,j+1], z_final[i,j+1]]])
+                        vb = np.array([[X[i,j], Y[i,j], 0], [X[i+1,j], Y[i+1,j], 0], 
+                                       [X[i+1,j+1], Y[i+1,j+1], 0], [X[i,j+1], Y[i,j+1], 0]])
+                        
+                        faces.append([vt[0], vt[1], vt[2]]) # Top 1
+                        faces.append([vt[0], vt[2], vt[3]]) # Top 2
+                        faces.append([vb[0], vb[2], vb[1]]) # Btm 1
+                        faces.append([vb[0], vb[3], vb[2]]) # Btm 2
+            
+            all_faces = np.array(faces)
             regalo_mesh = mesh.Mesh(np.zeros(all_faces.shape[0], dtype=mesh.Mesh.dtype))
             regalo_mesh.vectors = all_faces
             
             with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp:
                 regalo_mesh.save(tmp.name)
+                st.subheader("👀 Revisión 3D")
+                stl_from_file(file_path=tmp.name, auto_rotate=True, height=300)
                 
-                st.subheader("👀 Vista Previa 3D")
-                stl_from_file(
-                    file_path=tmp.name, 
-                    material="material", 
-                    auto_rotate=True,
-                    opacity=1.0,
-                    height=300
-                )
-                
-                st.divider()
                 with open(tmp.name, "rb") as f_stl:
                     st.download_button(
-                        label=f"📥 DESCARGAR {forma.upper()} PARA IMPRIMIR",
+                        label=f"📥 DESCARGAR {forma.upper()} FINAL",
                         data=f_stl,
-                        file_name=f"lithomaker_{forma.lower()}.stl",
+                        file_name=f"litho_comercial_{forma.lower()}.stl",
                         mime="application/sla",
-                        use_container_width=True
+                        width='stretch'
                     )
