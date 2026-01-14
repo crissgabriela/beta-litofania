@@ -2,3 +2,4 @@ streamlit
 numpy
 numpy-stl
 Pillow
+st-stl-viewer
