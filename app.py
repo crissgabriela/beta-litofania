@@ -54,6 +54,12 @@ def generar_mesh(image, width_mm, min_th, max_th, inverted):
     malla.vectors = all_faces
     return malla
 
+# (Opcional) Agregar después de generar el mesh
+st.write("Vista previa de la geometría:")
+# Streamlit no tiene visor STL nativo simple, 
+# pero podemos mostrar la imagen de altura como referencia técnica
+st.image(image, caption="Mapa de profundidad generado", clamp=True)
+
 # --- INTERFAZ ---
 archivo = st.file_uploader("Cargar imagen", type=['jpg', 'png', 'jpeg'])
 
@@ -77,4 +83,5 @@ if archivo:
                         mime="application/sla",
                         use_container_width=True
                     )
+
             st.success("¡Listo!")
