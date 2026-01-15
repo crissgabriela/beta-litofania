@@ -111,33 +111,54 @@ def generar_stl_manifold(z_grid, mask_total):
 
     return np.array(faces)
 
-# --- LÓGICA DE TEXTO ---
-def procesar_texto_con_base(texto, font_size_pt, relieve_mm):
+# --- LÓGICA DE TEXTO (NAMEPLATE) ---
+def procesar_texto_nameplate(texto, font_size_pt, depth_text_mm):
     font = cargar_fuente(font_size_pt)
     
-    dummy_img = Image.new('L', (1, 1))
-    draw = ImageDraw.Draw(dummy_img)
-    bbox = draw.textbbox((0, 0), texto, font=font)
+    # 1. Dimensiones del Texto
+    dummy = ImageDraw.Draw(Image.new('L', (1,1)))
+    bbox = dummy.textbbox((0,0), texto, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     
-    margen_px = int(1.0 * RES_PX_MM) 
-    base_w = text_w
-    base_h = text_h + (margen_px * 2)
+    # 2. Configuración de Base
+    # Altura de la base (Suelo) = 5mm
+    h_base_px = int(5.0 * RES_PX_MM)
     
-    img_text = Image.new('L', (base_w, base_h), 0)
-    draw_text = ImageDraw.Draw(img_text)
+    # Margen lateral de 2mm a cada lado
+    margin_x = int(2.0 * RES_PX_MM)
     
-    # Dibujar alineado
-    draw_text.text((-bbox[0], margen_px - bbox[1]), texto, font=font, fill=255)
+    # Lienzo Total: Texto + Base abajo
+    canvas_w = text_w + (margin_x * 2)
+    canvas_h = text_h + h_base_px
     
-    mask_letters = np.array(img_text) > 128
-    mask_base = np.ones((base_h, base_w), dtype=bool)
+    img = Image.new('L', (canvas_w, canvas_h), 0)
+    draw = ImageDraw.Draw(img)
     
-    z_map = np.full((base_h, base_w), 5.0) 
-    z_map[mask_letters] = 5.0 + relieve_mm 
+    # Dibujar Texto centrado, justo encima de la base
+    # Coordenada Y = 0 es Arriba. Base está abajo (Y grande).
+    # Texto se dibuja en (margin_x, 0) aprox
+    draw.text((margin_x - bbox[0], 0 - bbox[1]), texto, font=font, fill=255)
     
-    return z_map, mask_base
+    mask_text = np.array(img) > 128
+    
+    # Crear Máscara de Base (Tira inferior)
+    mask_base = np.zeros((canvas_h, canvas_w), dtype=bool)
+    mask_base[text_h:, :] = True # Desde fin del texto hasta abajo
+    
+    mask_total = mask_text | mask_base
+    
+    # 3. Z-MAP (Profundidad)
+    # Usuario: "Base 2mm más ancha [profunda] que letras"
+    depth_base_mm = depth_text_mm + 2.0
+    
+    z_map = np.zeros((canvas_h, canvas_w))
+    # Primero asignamos texto
+    z_map[mask_text] = depth_text_mm
+    # Luego base (donde se tocan, la base es más gruesa así que 'gana' o se fusiona)
+    z_map[mask_base] = depth_base_mm
+    
+    return z_map, mask_total
 
 # --- INTERFAZ ---
 
@@ -147,7 +168,6 @@ with tab1:
     archivo = st.file_uploader("Subir Fotografía", type=['jpg', 'png', 'jpeg'])
     if archivo:
         PIXELS_STD = int(90.0 * RES_PX_MM)
-        
         img = Image.open(archivo).convert('L')
         img_res = img.resize((int(PIXELS_STD*zoom), int((img.height/img.width)*PIXELS_STD*zoom)), Image.Resampling.LANCZOS)
         
@@ -168,7 +188,6 @@ with tab1:
             with st.spinner("Creando litofanía..."):
                 z_litho = LITHO_MAX_Z - (img_array / 255.0) * (LITHO_MAX_Z - LITHO_MIN_Z)
                 z_final = np.where(m_litho, z_litho, MARCO_Z)
-                
                 faces = generar_stl_manifold(z_final, m_frame)
                 
                 regalo_mesh = mesh.Mesh(np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype))
@@ -189,44 +208,38 @@ with tab2:
     d.text((10, 20), texto_usuario, font=font_preview, fill=(0,0,0))
     st.image(img_prev, caption="Estilo de letra", width=300)
     
-    st.info(f"Base de 5mm. Texto de +{altura_texto}mm. Orientación: FRONTAL.")
+    st.info(f"Dimensiones: Base suelo 5mm alto. Texto encima. Orientación: FRONTAL.")
 
     if st.button("🔤 Generar Placa de Nombre"):
         with st.spinner("Fusionando texto y base..."):
             
-            z_text_map, mask_total = procesar_texto_con_base(texto_usuario, tamano_fuente, altura_texto)
+            z_text_map, mask_total = procesar_texto_nameplate(texto_usuario, tamano_fuente, altura_texto)
             faces_text = generar_stl_manifold(z_text_map, mask_total)
             
             if len(faces_text) > 0:
                 text_mesh = mesh.Mesh(np.zeros(faces_text.shape[0], dtype=mesh.Mesh.dtype))
                 text_mesh.vectors = faces_text
                 
-                # --- ROTACIÓN MANUAL DE VECTORES (INFALIBLE) ---
-                # Intercambiamos los ejes para que Z sea Y, y Y sea Z.
-                # Ejes originales STL: 0=X, 1=Y, 2=Z
+                # --- ROTACIÓN MANUAL DE EJES (Intercambio Y <-> Z) ---
+                # Esto convierte el modelo "acostado" en "parado"
+                # Nuevo Y = Viejo Z (Profundidad = Grosor original)
+                # Nuevo Z = Viejo Y (Altura = Altura original de imagen)
                 
-                # 1. Copiamos vectores para no sobrescribir en el proceso
-                vec_x = text_mesh.vectors[:, :, 0].copy()
-                vec_y = text_mesh.vectors[:, :, 1].copy()
-                vec_z = text_mesh.vectors[:, :, 2].copy()
+                vec_y_original = text_mesh.vectors[:, :, 1].copy()
+                vec_z_original = text_mesh.vectors[:, :, 2].copy()
                 
-                # 2. Reasignamos para rotar 90 grados sobre X
-                # Nuevo Y = Viejo Z (El grosor ahora es la profundidad)
-                # Nuevo Z = Viejo Y (La altura de la letra ahora es altura Z)
+                # Intercambio
+                text_mesh.vectors[:, :, 1] = vec_z_original # Y toma Z (Profundidad)
+                text_mesh.vectors[:, :, 2] = vec_y_original # Z toma Y (Altura)
                 
-                text_mesh.vectors[:, :, 1] = vec_z # Y toma valor de Z
-                text_mesh.vectors[:, :, 2] = vec_y # Z toma valor de Y
-                
-                # 3. Guardado
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_t:
                     text_mesh.save(tmp_t.name)
                     
                     dim_w = mask_total.shape[1] / RES_PX_MM
                     dim_h = mask_total.shape[0] / RES_PX_MM
+                    st.success(f"¡Placa generada! Ancho: {dim_w:.1f} mm")
                     
-                    st.success(f"¡Placa generada! Ancho: {dim_w:.1f} mm | Alto: {dim_h:.1f} mm")
-                    
-                    st.subheader("Vista Previa (De Pie)")
+                    st.subheader("Vista Previa (Frontal)")
                     stl_from_file(file_path=tmp_t.name, material="material", auto_rotate=True, height=250)
                     
                     with open(tmp_t.name, "rb") as f_t:
@@ -236,4 +249,4 @@ with tab2:
                             file_name=f"base_texto_{texto_usuario}.stl"
                         )
             else:
-                st.error("Error al generar la geometría del texto.")
+                st.error("Error al generar texto.")
