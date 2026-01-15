@@ -7,11 +7,11 @@ from streamlit_stl import stl_from_file
 import math
 
 # Configuración de página
-st.set_page_config(page_title="LithoMaker Pro Final", layout="centered")
-st.title("💎 LithoMaker Pro: Suite de Impresión 2026")
+st.set_page_config(page_title="LithoMaker Pro 2026", layout="centered")
+st.title("💎 LithoMaker Pro: Normalización de Caracteres")
 
 # --- PARÁMETROS DE INGENIERÍA ---
-RES_PX_MM = 5.0  # 0.2 mm/px
+RES_PX_MM = 5.0  # 0.2 mm/pixel
 
 # Espesores Litofanía
 MARCO_Z = 5.0      
@@ -30,12 +30,12 @@ off_y = st.sidebar.slider("Mover Y:", -60, 60, 0)
 
 st.sidebar.divider()
 st.sidebar.header("3. Configuración Placa")
-texto_usuario = st.sidebar.text_input("Escribir nombre:", "ALEJANDRA")
+texto_usuario = st.sidebar.text_input("Escribir nombre:", "ALEJANDRA").upper()
 
-st.sidebar.info("📏 Parámetros Fijos:")
+st.sidebar.info("📏 Dimensiones Normalizadas:")
 st.sidebar.markdown("""
-* **Largo:** 180 mm
-* **Altura Letra:** 30 mm
+* **Largo Fijo:** 180 mm
+* **Altura Letra:** 30 mm (Independiente)
 * **Profundidad:** 30 mm
 * **Base Suelo:** 5 mm
 """)
@@ -50,7 +50,7 @@ def cargar_fuente(size_px):
 
 def obtener_mascaras(forma_tipo, size, border_mm):
     LADO_ESTANDAR = 90.0
-    rango = 2.0 # Rango ampliado para evitar cortes en el corazón
+    rango = 2.0 
     lin = np.linspace(-rango, rango, size)
     x, y = np.meshgrid(lin, -lin)
     units_per_mm = (rango * 2) / LADO_ESTANDAR
@@ -92,7 +92,7 @@ def generar_stl_manifold(z_grid, mask_total):
         if (j+1)>=cols-1 or not mask_total[i, j+1]: faces.append([vt1, vt3, vb3]); faces.append([vt1, vb3, vb1])
     return np.array(faces)
 
-def procesar_texto_nameplate_pro(texto):
+def procesar_texto_nameplate_normalizado(texto):
     ANCHO_BASE_MM = 180.0
     ALTO_TEXTO_MM = 30.0  
     ALTO_BASE_MM = 5.0    
@@ -102,38 +102,39 @@ def procesar_texto_nameplate_pro(texto):
     px_h_text = int(ALTO_TEXTO_MM * RES_PX_MM)
     px_h_base = int(ALTO_BASE_MM * RES_PX_MM)
     
-    # 1. Obtener métricas de la fuente
-    font = cargar_fuente(200)
-    ascent, descent = font.getmetrics()
-    
-    # 2. Medir texto y dibujar solo la parte superior (ignorar descenders)
-    dummy = Image.new('L', (1, 1))
-    draw_d = ImageDraw.Draw(dummy)
-    bbox = draw_d.textbbox((0, 0), texto, font=font, anchor='ls')
-    tw = bbox[2] - bbox[0]
-    
-    # Creamos lienzo donde la altura es exactamente el 'ascent'
-    # Dibujamos con ancla 'ls' (línea base) para que lo que baje de la base quede fuera
-    img_txt = Image.new('L', (tw, ascent), 0)
-    draw_t = ImageDraw.Draw(img_txt)
-    draw_t.text((0, ascent), texto, font=font, fill=255, anchor='ls')
-    
-    # 3. Estirar a 180x30mm
-    img_final_text = img_txt.resize((px_w, px_h_text), Image.Resampling.LANCZOS)
-    
-    # 4. Canvas final con base
+    # Crear canvas final
     total_h = px_h_text + px_h_base
-    canvas = Image.new('L', (px_w, total_h), 0)
-    canvas.paste(img_final_text, (0, 0))
+    final_canvas = Image.new('L', (px_w, total_h), 0)
     
-    mask_text = np.array(canvas) > 128
+    # Dividir ancho entre número de caracteres
+    n_chars = len(texto)
+    char_w_target = px_w // n_chars
+    
+    font = cargar_fuente(250)
+    
+    for i, letra in enumerate(texto):
+        # Renderizar cada letra por separado en alta resolución
+        char_img = Image.new('L', (500, 500), 0)
+        draw = ImageDraw.Draw(char_img)
+        draw.text((50, 50), letra, font=font, fill=255)
+        
+        # Obtener el cuadro de contorno exacto de la letra
+        bbox = char_img.getbbox()
+        if bbox:
+            letra_recortada = char_img.crop(bbox)
+            # Escalar letra para que ocupe char_w_target x px_h_text
+            # Esto deforma la letra para que todas midan lo mismo
+            letra_final = letra_recortada.resize((char_w_target, px_h_text), Image.Resampling.LANCZOS)
+            final_canvas.paste(letra_final, (i * char_w_target, 0))
+    
+    mask_text = np.array(final_canvas) > 128
     mask_base = np.zeros((total_h, px_w), dtype=bool)
     mask_base[px_h_text:, :] = True 
     
     mask_total = mask_text | mask_base
     z_map = np.zeros((total_h, px_w))
     z_map[mask_text] = EXTRUSION_MM
-    z_map[mask_base] = EXTRUSION_MM + 1.0 # Solape de fusión
+    z_map[mask_base] = EXTRUSION_MM + 1.0 
     
     return z_map, mask_total
 
@@ -155,24 +156,24 @@ with tab1:
         prev = np.array(Image.fromarray(img_array).convert("RGB"))
         prev[m_frame & ~m_litho] = [200, 50, 50] 
         prev[~m_frame] = [30, 30, 30]
-        st.image(prev, caption="Encuadre", width='stretch')
+        st.image(prev, caption="Vista de Encuadre", width='stretch')
         if st.button("🚀 Generar Litofanía"):
             z_litho = LITHO_MAX_Z - (img_array / 255.0) * (LITHO_MAX_Z - LITHO_MIN_Z)
             z_final = np.where(m_litho, z_litho, MARCO_Z)
             faces = generar_stl_manifold(z_final, m_frame)
-            regalo_mesh = mesh.Mesh(np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype))
-            regalo_mesh.vectors = faces
+            reg_mesh = mesh.Mesh(np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype))
+            reg_mesh.vectors = faces
             with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp:
-                regalo_mesh.save(tmp.name)
+                reg_mesh.save(tmp.name)
                 stl_from_file(file_path=tmp.name, height=300)
                 with open(tmp.name, "rb") as f:
-                    st.download_button("📥 Descargar Litofanía", f, f"litho_{forma}.stl", width='stretch')
+                    st.download_button("📥 Descargar STL", f, f"litho_{forma}.stl", width='stretch')
 
 with tab2:
-    st.markdown("#### Nameplate Pro (Alineación Forzada)")
-    if st.button("🔤 Generar Placa"):
-        with st.spinner("Fusionando letras a la base..."):
-            z_map, mask_tot = procesar_texto_nameplate_pro(texto_usuario)
+    st.markdown("#### Nameplate 180x30mm (Normalización Forzada)")
+    if st.button("🔤 Generar Placa de Nombre"):
+        with st.spinner("Procesando caracteres individuales..."):
+            z_map, mask_tot = procesar_texto_nameplate_normalizado(texto_usuario)
             faces_t = generar_stl_manifold(z_map, mask_tot)
             if len(faces_t) > 0:
                 text_mesh = mesh.Mesh(np.zeros(faces_t.shape[0], dtype=mesh.Mesh.dtype))
@@ -181,7 +182,7 @@ with tab2:
                 text_mesh.vectors[:,:,1], text_mesh.vectors[:,:,2] = v_z, v_y
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_t:
                     text_mesh.save(tmp_t.name)
-                    st.success("✅ Placa generada con éxito.")
+                    st.success("✅ Placa normalizada generada con éxito.")
                     stl_from_file(file_path=tmp_t.name, material="material", auto_rotate=True, height=250)
                     with open(tmp_t.name, "rb") as f_t:
                         st.download_button("📥 Descargar Placa", f_t, f"base_texto_{texto_usuario}.stl", width='stretch')
