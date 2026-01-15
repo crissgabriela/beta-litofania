@@ -8,10 +8,10 @@ import math
 
 # Configuración de página
 st.set_page_config(page_title="LithoMaker Pro Final", layout="centered")
-st.title("💎 LithoMaker Pro: Suite de Impresión")
+st.title("💎 LithoMaker Pro: Suite de Impresión 2026")
 
 # --- PARÁMETROS DE INGENIERÍA ---
-RES_PX_MM = 5.0  # 0.2 mm/px [cite: 3, 183]
+RES_PX_MM = 5.0  # 0.2 mm/px
 
 # Espesores Litofanía
 MARCO_Z = 5.0      
@@ -29,18 +29,18 @@ off_x = st.sidebar.slider("Mover X:", -60, 60, 0)
 off_y = st.sidebar.slider("Mover Y:", -60, 60, 0)
 
 st.sidebar.divider()
-st.sidebar.header("3. Generador de Textos")
+st.sidebar.header("3. Configuración Placa")
 texto_usuario = st.sidebar.text_input("Escribir nombre:", "ALEJANDRA")
 
-st.sidebar.info("📏 Dimensiones Fijas Actualizadas:")
+st.sidebar.info("📏 Parámetros Fijos:")
 st.sidebar.markdown("""
-* **Largo Base:** 180 mm
+* **Largo:** 180 mm
 * **Altura Letra:** 30 mm
-* **Profundidad (Ancho):** 30 mm
+* **Profundidad:** 30 mm
 * **Base Suelo:** 5 mm
 """)
 
-# --- FUNCIONES AUXILIARES ---
+# --- FUNCIONES ---
 
 def cargar_fuente(size_px):
     try:
@@ -50,7 +50,7 @@ def cargar_fuente(size_px):
 
 def obtener_mascaras(forma_tipo, size, border_mm):
     LADO_ESTANDAR = 90.0
-    rango = 1.6 
+    rango = 2.0 # Rango ampliado para evitar cortes en el corazón
     lin = np.linspace(-rango, rango, size)
     x, y = np.meshgrid(lin, -lin)
     units_per_mm = (rango * 2) / LADO_ESTANDAR
@@ -65,8 +65,8 @@ def obtener_mascaras(forma_tipo, size, border_mm):
         m_litho = (np.abs(x) <= (L - offset)) & (np.abs(y) <= (L - offset))
     elif forma_tipo == "Corazón":
         def heart(cx, cy): return (cx**2 + (cy - 0.6 * np.sqrt(np.abs(cx)))**2)
-        m_frame = heart(x, y) <= 1.6 
-        m_litho = heart(x, y) <= (1.6 - offset*1.8) 
+        m_frame = heart(x, y) <= 1.8 
+        m_litho = heart(x, y) <= (1.8 - offset*1.8) 
     return m_litho, m_frame
 
 def generar_stl_manifold(z_grid, mask_total):
@@ -92,42 +92,48 @@ def generar_stl_manifold(z_grid, mask_total):
         if (j+1)>=cols-1 or not mask_total[i, j+1]: faces.append([vt1, vt3, vb3]); faces.append([vt1, vb3, vb1])
     return np.array(faces)
 
-# --- LÓGICA DE TEXTO MEJORADA (SOLUCIÓN A LA 'J') ---
 def procesar_texto_nameplate_pro(texto):
     ANCHO_BASE_MM = 180.0
-    ALTO_TEXTO_MM = 30.0  # Altura fija letras
-    ALTO_BASE_MM = 5.0    # Suelo
-    EXTRUSION_MM = 30.0   # Profundidad fija
+    ALTO_TEXTO_MM = 30.0  
+    ALTO_BASE_MM = 5.0    
+    EXTRUSION_MM = 30.0   
     
-    px_w, px_h_text, px_h_base = int(ANCHO_BASE_MM*RES_PX_MM), int(ALTO_TEXTO_MM*RES_PX_MM), int(ALTO_BASE_MM*RES_PX_MM)
+    px_w = int(ANCHO_BASE_MM * RES_PX_MM)
+    px_h_text = int(ALTO_TEXTO_MM * RES_PX_MM)
+    px_h_base = int(ALTO_BASE_MM * RES_PX_MM)
     
-    # 1. Renderizado inicial de alta calidad
-    font = cargar_fuente(200) # Tamaño grande para recorte limpio
-    img_tmp = Image.new('L', (4000, 500), 0)
-    draw = ImageDraw.Draw(img_tmp)
-    draw.text((10, 10), texto, font=font, fill=255)
+    # 1. Obtener métricas de la fuente
+    font = cargar_fuente(200)
+    ascent, descent = font.getmetrics()
     
-    # 2. Recorte exacto de los bordes del texto (Ignorar espacios y descensos de 'j')
-    bbox = img_tmp.getbbox()
-    if not bbox: return None, None
-    img_cropped = img_tmp.crop(bbox)
+    # 2. Medir texto y dibujar solo la parte superior (ignorar descenders)
+    dummy = Image.new('L', (1, 1))
+    draw_d = ImageDraw.Draw(dummy)
+    bbox = draw_d.textbbox((0, 0), texto, font=font, anchor='ls')
+    tw = bbox[2] - bbox[0]
     
-    # 3. Estirar texto a dimensiones exactas: 180mm x 30mm
-    img_stretched = img_cropped.resize((px_w, px_h_text), Image.Resampling.LANCZOS)
+    # Creamos lienzo donde la altura es exactamente el 'ascent'
+    # Dibujamos con ancla 'ls' (línea base) para que lo que baje de la base quede fuera
+    img_txt = Image.new('L', (tw, ascent), 0)
+    draw_t = ImageDraw.Draw(img_txt)
+    draw_t.text((0, ascent), texto, font=font, fill=255, anchor='ls')
     
-    # 4. Canvas final (Altura total = 30mm texto + 5mm base)
+    # 3. Estirar a 180x30mm
+    img_final_text = img_txt.resize((px_w, px_h_text), Image.Resampling.LANCZOS)
+    
+    # 4. Canvas final con base
     total_h = px_h_text + px_h_base
     canvas = Image.new('L', (px_w, total_h), 0)
-    canvas.paste(img_stretched, (0, 0)) # Texto arriba
+    canvas.paste(img_final_text, (0, 0))
     
     mask_text = np.array(canvas) > 128
     mask_base = np.zeros((total_h, px_w), dtype=bool)
-    mask_base[px_h_text:, :] = True # Base sólida abajo
+    mask_base[px_h_text:, :] = True 
     
     mask_total = mask_text | mask_base
     z_map = np.zeros((total_h, px_w))
     z_map[mask_text] = EXTRUSION_MM
-    z_map[mask_base] = EXTRUSION_MM + 1.0 # Pequeño traslape para unión perfecta
+    z_map[mask_base] = EXTRUSION_MM + 1.0 # Solape de fusión
     
     return z_map, mask_total
 
@@ -149,7 +155,7 @@ with tab1:
         prev = np.array(Image.fromarray(img_array).convert("RGB"))
         prev[m_frame & ~m_litho] = [200, 50, 50] 
         prev[~m_frame] = [30, 30, 30]
-        st.image(prev, caption="Encuadre", width='stretch') # [cite: 7, 10]
+        st.image(prev, caption="Encuadre", width='stretch')
         if st.button("🚀 Generar Litofanía"):
             z_litho = LITHO_MAX_Z - (img_array / 255.0) * (LITHO_MAX_Z - LITHO_MIN_Z)
             z_final = np.where(m_litho, z_litho, MARCO_Z)
@@ -160,10 +166,10 @@ with tab1:
                 regalo_mesh.save(tmp.name)
                 stl_from_file(file_path=tmp.name, height=300)
                 with open(tmp.name, "rb") as f:
-                    st.download_button("📥 Descargar Litofanía", f, f"litho_{forma}.stl")
+                    st.download_button("📥 Descargar Litofanía", f, f"litho_{forma}.stl", width='stretch')
 
 with tab2:
-    st.markdown("#### Nameplate 180x30mm (Alineación Perfecta)")
+    st.markdown("#### Nameplate Pro (Alineación Forzada)")
     if st.button("🔤 Generar Placa"):
         with st.spinner("Fusionando letras a la base..."):
             z_map, mask_tot = procesar_texto_nameplate_pro(texto_usuario)
@@ -171,7 +177,6 @@ with tab2:
             if len(faces_t) > 0:
                 text_mesh = mesh.Mesh(np.zeros(faces_t.shape[0], dtype=mesh.Mesh.dtype))
                 text_mesh.vectors = faces_t
-                # Rotar a posición vertical (Standing)
                 v_y, v_z = text_mesh.vectors[:,:,1].copy(), text_mesh.vectors[:,:,2].copy()
                 text_mesh.vectors[:,:,1], text_mesh.vectors[:,:,2] = v_z, v_y
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_t:
