@@ -4,7 +4,7 @@ from stl import mesh
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
 from streamlit_stl import stl_from_file
-import math  # Importamos librería matemática para la rotación
+import math
 
 # Configuración de página
 st.set_page_config(page_title="LithoMaker Pro + Texto", layout="centered")
@@ -38,12 +38,13 @@ altura_texto = st.sidebar.slider("Relieve del Texto (mm):", 2.0, 15.0, 5.0)
 
 def cargar_fuente(size):
     try:
+        # Intentamos cargar fuente del sistema
         return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
     except:
+        # Fallback
         return ImageFont.load_default()
 
 def obtener_mascaras(forma_tipo, size, border_mm):
-    # Lógica para Litofanías (Cuadrado 90x90 fijo)
     LADO_ESTANDAR = 90.0
     rango = 1.6 
     lin = np.linspace(-rango, rango, size)
@@ -71,10 +72,6 @@ def obtener_mascaras(forma_tipo, size, border_mm):
 
 # --- GENERADOR MANIFOLD DINÁMICO ---
 def generar_stl_manifold(z_grid, mask_total):
-    """
-    Genera geometría cerrada adaptándose al tamaño real de la matriz z_grid.
-    Calcula las dimensiones físicas basándose en RES_PX_MM.
-    """
     filas, cols = z_grid.shape
     
     # Calcular dimensiones físicas reales en mm
@@ -107,7 +104,7 @@ def generar_stl_manifold(z_grid, mask_total):
         faces.append([vt0, vt2, vt3]); faces.append([vt0, vt3, vt1])
         faces.append([vb0, vb3, vb2]); faces.append([vb0, vb1, vb3])
         
-        # Paredes (Detección de bordes)
+        # Paredes
         if i==0 or not mask_total[i-1, j]: # Norte
             faces.append([vt0, vt1, vb1]); faces.append([vt0, vb1, vb0])
         if (i+1)>=filas-1 or not mask_total[i+1, j]: # Sur
@@ -123,48 +120,32 @@ def generar_stl_manifold(z_grid, mask_total):
 def procesar_texto_con_base(texto, font_size_pt, relieve_mm):
     font = cargar_fuente(font_size_pt)
     
-    # 1. Calcular dimensiones exactas del texto
+    # 1. Dimensiones
     dummy_img = Image.new('L', (1, 1))
     draw = ImageDraw.Draw(dummy_img)
     bbox = draw.textbbox((0, 0), texto, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     
-    # 2. Definir dimensiones de la Base Rectangular
-    # Ancho = Ancho Texto (Exacto)
-    # Alto = Alto Texto + 2mm de margen (1mm arriba, 1mm abajo)
-    margen_px = int(1.0 * RES_PX_MM) # 1mm en pixeles
-    
+    # 2. Base
+    margen_px = int(1.0 * RES_PX_MM) # 1mm margen
     base_w = text_w
     base_h = text_h + (margen_px * 2)
     
-    # Crear lienzo ajustado al tamaño final
-    canvas_w = base_w
-    canvas_h = base_h
-    
-    # Crear imágenes para máscara
-    img_text = Image.new('L', (canvas_w, canvas_h), 0)
+    img_text = Image.new('L', (base_w, base_h), 0)
     draw_text = ImageDraw.Draw(img_text)
     
-    # Dibujar texto centrado verticalmente
-    # X=0 (alineado a la izquierda), Y=margen (centrado)
+    # Dibujar texto
     draw_text.text((-bbox[0], margen_px - bbox[1]), texto, font=font, fill=255)
     
-    # Máscaras Booleanas
-    # Mascara Texto: Donde hay letras
     mask_letters = np.array(img_text) > 128
+    mask_base = np.ones((base_h, base_w), dtype=bool)
     
-    # Mascara Base: Todo el rectángulo
-    mask_base = np.ones((canvas_h, canvas_w), dtype=bool)
+    # 3. Z Map
+    z_map = np.full((base_h, base_w), 5.0) # Base 5mm
+    z_map[mask_letters] = 5.0 + relieve_mm # Letras suman altura
     
-    # 3. Construir Mapa Z
-    # Base = 5mm
-    z_map = np.full((canvas_h, canvas_w), 5.0)
-    
-    # Texto = Base (5mm) + Relieve (usuario)
-    z_map[mask_letters] = 5.0 + relieve_mm
-    
-    return z_map, mask_base # Retornamos mask_base porque es el sólido total
+    return z_map, mask_base
 
 # --- INTERFAZ ---
 
@@ -173,7 +154,6 @@ tab1, tab2 = st.tabs(["🖼️ Litofanía", "🔤 Base de Texto"])
 with tab1:
     archivo = st.file_uploader("Subir Fotografía", type=['jpg', 'png', 'jpeg'])
     if archivo:
-        # Dimensiones estándar para litofanía (90mm)
         PIXELS_STD = int(90.0 * RES_PX_MM)
         
         img = Image.open(archivo).convert('L')
@@ -211,33 +191,43 @@ with tab1:
 with tab2:
     st.markdown("#### Crea una base sólida con nombre")
     
-    # Vista previa rápida del texto 2D
     font_preview = cargar_fuente(tamano_fuente)
     img_prev = Image.new('RGB', (400, 100), (240, 240, 240))
     d = ImageDraw.Draw(img_prev)
     d.text((10, 20), texto_usuario, font=font_preview, fill=(0,0,0))
     st.image(img_prev, caption="Estilo de letra", width=300)
     
-    st.info(f"La base tendrá 5mm de altura. El texto sobresaldrá {altura_texto}mm más. (Rotado para quedar de pie)")
+    st.info(f"La base tendrá 5mm de altura. El texto sobresaldrá {altura_texto}mm más.")
 
     if st.button("🔤 Generar Placa de Nombre"):
         with st.spinner("Fusionando texto y base..."):
             
-            # Generar Z-Map fusionado
             z_text_map, mask_total = procesar_texto_con_base(texto_usuario, tamano_fuente, altura_texto)
-            
-            # Generar Geometría
             faces_text = generar_stl_manifold(z_text_map, mask_total)
             
             if len(faces_text) > 0:
                 text_mesh = mesh.Mesh(np.zeros(faces_text.shape[0], dtype=mesh.Mesh.dtype))
                 text_mesh.vectors = faces_text
                 
-                # --- ROTACIÓN AUTOMÁTICA (90 GRADOS EN X) ---
-                # Esto hace que el texto mire al frente en lugar de al techo
+                # ROTACIÓN 90 GRADOS (Para que quede de pie)
                 text_mesh.rotate([1.0, 0.0, 0.0], math.radians(90))
                 
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_t:
                     text_mesh.save(tmp_t.name)
                     
-                    st.success(f"¡Placa generada
+                    # Cálculo seguro de dimensiones para evitar el error de sintaxis
+                    ancho_final = mask_total.shape[1] / RES_PX_MM
+                    alto_final = mask_total.shape[0] / RES_PX_MM
+                    st.success(f"¡Placa generada! Dimensiones: {ancho_final:.1f} x {alto_final:.1f} mm")
+                    
+                    st.subheader("Vista Previa 3D")
+                    stl_from_file(file_path=tmp_t.name, material="material", auto_rotate=True, height=250)
+                    
+                    with open(tmp_t.name, "rb") as f_t:
+                        st.download_button(
+                            label=f"📥 Descargar Placa '{texto_usuario}'", 
+                            data=f_t, 
+                            file_name=f"base_texto_{texto_usuario}.stl"
+                        )
+            else:
+                st.error("Error al generar la geometría del texto.")
