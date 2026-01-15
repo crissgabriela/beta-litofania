@@ -4,6 +4,7 @@ from stl import mesh
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
 from streamlit_stl import stl_from_file
+import math  # Importamos librería matemática para la rotación
 
 # Configuración de página
 st.set_page_config(page_title="LithoMaker Pro + Texto", layout="centered")
@@ -11,7 +12,6 @@ st.title("💎 LithoMaker Pro: Suite de Impresión")
 
 # --- PARÁMETROS DE INGENIERÍA ---
 RES_PX_MM = 5.0  # 5 píxeles por mm (Alta definición)
-# Nota: Ya no usamos LADO_MM fijo para todo, el texto tendrá su propio tamaño.
 
 # Espesores (Z)
 MARCO_Z = 5.0      
@@ -218,7 +218,7 @@ with tab2:
     d.text((10, 20), texto_usuario, font=font_preview, fill=(0,0,0))
     st.image(img_prev, caption="Estilo de letra", width=300)
     
-    st.info(f"La base tendrá 5mm de altura. El texto sobresaldrá {altura_texto}mm más.")
+    st.info(f"La base tendrá 5mm de altura. El texto sobresaldrá {altura_texto}mm más. (Rotado para quedar de pie)")
 
     if st.button("🔤 Generar Placa de Nombre"):
         with st.spinner("Fusionando texto y base..."):
@@ -233,19 +233,11 @@ with tab2:
                 text_mesh = mesh.Mesh(np.zeros(faces_text.shape[0], dtype=mesh.Mesh.dtype))
                 text_mesh.vectors = faces_text
                 
+                # --- ROTACIÓN AUTOMÁTICA (90 GRADOS EN X) ---
+                # Esto hace que el texto mire al frente en lugar de al techo
+                text_mesh.rotate([1.0, 0.0, 0.0], math.radians(90))
+                
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_t:
                     text_mesh.save(tmp_t.name)
                     
-                    st.success(f"¡Placa generada! Dimensiones: {mask_total.shape[1]/RES_PX_MM:.1f} x {mask_total.shape[0]/RES_PX_MM:.1f} mm")
-                    
-                    st.subheader("Vista Previa 3D")
-                    stl_from_file(file_path=tmp_t.name, material="material", auto_rotate=True, height=250)
-                    
-                    with open(tmp_t.name, "rb") as f_t:
-                        st.download_button(
-                            label=f"📥 Descargar Placa '{texto_usuario}'", 
-                            data=f_t, 
-                            file_name=f"base_texto_{texto_usuario}.stl"
-                        )
-            else:
-                st.error("Error al generar la geometría del texto.")
+                    st.success(f"¡Placa generada
