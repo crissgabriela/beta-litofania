@@ -4,14 +4,13 @@ from stl import mesh
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
 from streamlit_stl import stl_from_file
-import math
 
 # Configuración de página
-st.set_page_config(page_title="LithoMaker Pro + Texto", layout="centered")
+st.set_page_config(page_title="LithoMaker Pro Final", layout="centered")
 st.title("💎 LithoMaker Pro: Suite de Impresión")
 
 # --- PARÁMETROS DE INGENIERÍA ---
-RES_PX_MM = 5.0  # 5 píxeles por mm (Alta definición)
+RES_PX_MM = 5.0  # 5 píxeles por mm (0.2 mm/px)
 
 # Espesores (Z)
 MARCO_Z = 5.0      
@@ -38,10 +37,8 @@ altura_texto = st.sidebar.slider("Relieve del Texto (mm):", 2.0, 15.0, 5.0)
 
 def cargar_fuente(size):
     try:
-        # Intentamos cargar fuente del sistema
         return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
     except:
-        # Fallback
         return ImageFont.load_default()
 
 def obtener_mascaras(forma_tipo, size, border_mm):
@@ -100,11 +97,9 @@ def generar_stl_manifold(z_grid, mask_total):
         vt2=[x2,y2,z2]; vb2=[x2,y2,0]
         vt3=[x3,y3,z3]; vb3=[x3,y3,0]
         
-        # Tapa y Base
         faces.append([vt0, vt2, vt3]); faces.append([vt0, vt3, vt1])
         faces.append([vb0, vb3, vb2]); faces.append([vb0, vb1, vb3])
         
-        # Paredes
         if i==0 or not mask_total[i-1, j]: # Norte
             faces.append([vt0, vt1, vb1]); faces.append([vt0, vb1, vb0])
         if (i+1)>=filas-1 or not mask_total[i+1, j]: # Sur
@@ -120,30 +115,27 @@ def generar_stl_manifold(z_grid, mask_total):
 def procesar_texto_con_base(texto, font_size_pt, relieve_mm):
     font = cargar_fuente(font_size_pt)
     
-    # 1. Dimensiones
     dummy_img = Image.new('L', (1, 1))
     draw = ImageDraw.Draw(dummy_img)
     bbox = draw.textbbox((0, 0), texto, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     
-    # 2. Base
-    margen_px = int(1.0 * RES_PX_MM) # 1mm margen
+    margen_px = int(1.0 * RES_PX_MM) 
     base_w = text_w
     base_h = text_h + (margen_px * 2)
     
     img_text = Image.new('L', (base_w, base_h), 0)
     draw_text = ImageDraw.Draw(img_text)
     
-    # Dibujar texto
+    # Dibujar alineado
     draw_text.text((-bbox[0], margen_px - bbox[1]), texto, font=font, fill=255)
     
     mask_letters = np.array(img_text) > 128
     mask_base = np.ones((base_h, base_w), dtype=bool)
     
-    # 3. Z Map
-    z_map = np.full((base_h, base_w), 5.0) # Base 5mm
-    z_map[mask_letters] = 5.0 + relieve_mm # Letras suman altura
+    z_map = np.full((base_h, base_w), 5.0) 
+    z_map[mask_letters] = 5.0 + relieve_mm 
     
     return z_map, mask_base
 
@@ -197,7 +189,7 @@ with tab2:
     d.text((10, 20), texto_usuario, font=font_preview, fill=(0,0,0))
     st.image(img_prev, caption="Estilo de letra", width=300)
     
-    st.info(f"La base tendrá 5mm de altura. El texto sobresaldrá {altura_texto}mm más.")
+    st.info(f"Base de 5mm. Texto de +{altura_texto}mm. Orientación: FRONTAL.")
 
     if st.button("🔤 Generar Placa de Nombre"):
         with st.spinner("Fusionando texto y base..."):
@@ -209,18 +201,32 @@ with tab2:
                 text_mesh = mesh.Mesh(np.zeros(faces_text.shape[0], dtype=mesh.Mesh.dtype))
                 text_mesh.vectors = faces_text
                 
-                # ROTACIÓN 90 GRADOS (Para que quede de pie)
-                text_mesh.rotate([1.0, 0.0, 0.0], math.radians(90))
+                # --- ROTACIÓN MANUAL DE VECTORES (INFALIBLE) ---
+                # Intercambiamos los ejes para que Z sea Y, y Y sea Z.
+                # Ejes originales STL: 0=X, 1=Y, 2=Z
                 
+                # 1. Copiamos vectores para no sobrescribir en el proceso
+                vec_x = text_mesh.vectors[:, :, 0].copy()
+                vec_y = text_mesh.vectors[:, :, 1].copy()
+                vec_z = text_mesh.vectors[:, :, 2].copy()
+                
+                # 2. Reasignamos para rotar 90 grados sobre X
+                # Nuevo Y = Viejo Z (El grosor ahora es la profundidad)
+                # Nuevo Z = Viejo Y (La altura de la letra ahora es altura Z)
+                
+                text_mesh.vectors[:, :, 1] = vec_z # Y toma valor de Z
+                text_mesh.vectors[:, :, 2] = vec_y # Z toma valor de Y
+                
+                # 3. Guardado
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_t:
                     text_mesh.save(tmp_t.name)
                     
-                    # Cálculo seguro de dimensiones para evitar el error de sintaxis
-                    ancho_final = mask_total.shape[1] / RES_PX_MM
-                    alto_final = mask_total.shape[0] / RES_PX_MM
-                    st.success(f"¡Placa generada! Dimensiones: {ancho_final:.1f} x {alto_final:.1f} mm")
+                    dim_w = mask_total.shape[1] / RES_PX_MM
+                    dim_h = mask_total.shape[0] / RES_PX_MM
                     
-                    st.subheader("Vista Previa 3D")
+                    st.success(f"¡Placa generada! Ancho: {dim_w:.1f} mm | Alto: {dim_h:.1f} mm")
+                    
+                    st.subheader("Vista Previa (De Pie)")
                     stl_from_file(file_path=tmp_t.name, material="material", auto_rotate=True, height=250)
                     
                     with open(tmp_t.name, "rb") as f_t:
