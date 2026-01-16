@@ -8,9 +8,9 @@ import math
 
 # Configuración de página
 st.set_page_config(page_title="LithoMaker Pro 2026", layout="centered")
-st.title("💎 LithoMaker Pro: Estudio de Ensamble")
+st.title("💎 LithoMaker Pro: Suite de Diseño")
 
-# --- PARÁMETROS TÉCNICOS ---
+# --- PARÁMETROS DE INGENIERÍA ---
 RES_PX_MM = 5.0 
 MARCO_Z = 5.0      
 LITHO_MIN_Z = 0.6  
@@ -22,21 +22,25 @@ if 'litho_mesh' not in st.session_state:
 if 'text_mesh' not in st.session_state:
     st.session_state['text_mesh'] = None
 
-# --- SIDEBAR: CONTROLES COMUNES ---
-st.sidebar.header("1. Producto Litofanía")
+# --- SIDEBAR ---
+st.sidebar.header("1. Configuración de Foto")
 forma = st.sidebar.selectbox("Forma:", ["Corazón", "Círculo", "Cuadrado"])
 ancho_marco = st.sidebar.slider("Ancho Marco (mm):", 2.0, 5.0, 3.0)
 
-st.sidebar.header("2. Imagen")
+st.sidebar.header("2. Encuadre")
 zoom = st.sidebar.slider("Zoom:", 0.5, 3.0, 1.2)
 off_x = st.sidebar.slider("Mover X:", -60, 60, 0)
 off_y = st.sidebar.slider("Mover Y:", -60, 60, 0)
 
 st.sidebar.divider()
 st.sidebar.header("3. Configuración Placa")
-texto_usuario = st.sidebar.text_input("Escribir nombre:", "ALEJANDRA").upper()
+texto_usuario = st.sidebar.text_input("Nombre para la base:", "ALEJANDRA").upper()
 
-# --- FUNCIONES DE CÁLCULO ---
+# --- FUNCIONES ---
+
+def cargar_fuente(size_px):
+    try: return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", int(size_px))
+    except: return ImageFont.load_default()
 
 def obtener_mascaras(forma_tipo, size, border_mm):
     rango = 2.0 
@@ -81,8 +85,7 @@ def procesar_texto_nameplate_normalizado(texto):
     px_w, px_ht, px_hb = int(180*RES_PX_MM), int(30*RES_PX_MM), int(5*RES_PX_MM)
     canvas = Image.new('L', (px_w, px_ht + px_hb), 0)
     n_chars = len(texto); cw = px_w // n_chars
-    try: font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 250)
-    except: font = ImageFont.load_default()
+    font = cargar_fuente(250)
     for i, letra in enumerate(texto):
         cimg = Image.new('L', (500, 500), 0); d = ImageDraw.Draw(cimg); d.text((50, 50), letra, font=font, fill=255)
         bbox = cimg.getbbox()
@@ -96,63 +99,63 @@ def procesar_texto_nameplate_normalizado(texto):
     return z, m_t | m_b
 
 # --- INTERFAZ TABS ---
-t1, t2, t3 = st.tabs(["🖼️ 1. Litofanía", "🔤 2. Placa de Nombre", "🧩 3. Vista de Ensamble"])
+t1, t2, t3 = st.tabs(["🖼️ 1. Foto / Litofanía", "🔤 2. Base / Placa", "🧩 3. Escenario 3D"])
 
 with t1:
-    archivo = st.file_uploader("Subir Fotografía", type=['jpg', 'png', 'jpeg'])
+    archivo = st.file_uploader("Cargar imagen", type=['jpg', 'png', 'jpeg'])
     if archivo:
         PX_S = int(90.0 * RES_PX_MM)
-        img = Image.open(archivo).convert('L')
-        img_r = img.resize((int(PX_S*zoom), int((img.height/img.width)*PX_S*zoom)), Image.Resampling.LANCZOS)
+        img_orig = Image.open(archivo).convert('L')
+        img_r = img_orig.resize((int(PX_S*zoom), int((img_orig.height/img_orig.width)*PX_S*zoom)), Image.Resampling.LANCZOS)
         canv = Image.new('L', (PX_S, PX_S), color=255)
         canv.paste(img_r, ((PX_S - img_r.width)//2 + int(off_x*RES_PX_MM), (PX_S - img_r.height)//2 + int(off_y*RES_PX_MM)))
         ml, mf = obtener_mascaras(forma, PX_S, ancho_marco)
         img_a = np.array(canv)
         prev = np.array(Image.fromarray(img_a).convert("RGB"))
         prev[mf & ~ml] = [200, 50, 50]; prev[~mf] = [30, 30, 30]
-        st.image(prev, caption="Vista de Encuadre", width='stretch')
-        if st.button("🚀 Generar y Guardar Litofanía"):
+        st.image(prev, caption="Encuadre", width='stretch') # [cite: 7]
+        if st.button("🚀 Procesar Foto", width='stretch'):
             z_f = np.where(ml, 3.0 - (img_a/255.0)*2.4, 5.0)
             faces = generar_stl_manifold(z_f, mf)
             m = mesh.Mesh(np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype)); m.vectors = faces
             m.rotate([1, 0, 0], math.radians(90))
             st.session_state['litho_mesh'] = m
-            st.success("✅ Litofanía guardada en memoria.")
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp:
+                m.save(tmp.name)
+                with open(tmp.name, "rb") as f:
+                    st.download_button("📥 Descargar STL Foto", f, f"litofania_{forma}.stl", width='stretch')
 
 with t2:
-    if st.button("🔤 Generar y Guardar Placa"):
-        with st.spinner("Procesando placa..."):
+    st.write(f"Texto actual: **{texto_usuario}**")
+    if st.button("🔤 Procesar Placa", width='stretch'):
+        with st.spinner("Modelando base..."):
             z_m, m_t = procesar_texto_nameplate_normalizado(texto_usuario)
             faces = generar_stl_manifold(z_m, m_t)
             m = mesh.Mesh(np.zeros(faces.shape[0], dtype=mesh.Mesh.dtype)); m.vectors = faces
             m.rotate([1, 0, 0], math.radians(90))
             st.session_state['text_mesh'] = m
-            st.success("✅ Placa guardada en memoria.")
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_t:
+                m.save(tmp_t.name)
+                with open(tmp_t.name, "rb") as ft:
+                    st.download_button("📥 Descargar STL Placa", ft, f"placa_{texto_usuario}.stl", width='stretch')
 
 with t3:
-    st.header("Ajuste de Ensamble Final")
+    st.header("Visualización de Ensamble")
     if st.session_state['litho_mesh'] is not None and st.session_state['text_mesh'] is not None:
-        # CONTROLES DE AJUSTE
-        col1, col2 = st.columns(2)
-        with col1:
-            pos_x_ens = st.slider("Posición Horizontal (X):", 0, 90, 45)
-        with col2:
-            pos_z_ens = st.slider("Altura sobre base (Z):", -5, 10, 5)
-            
-        if st.button("🧩 Visualizar Ensamble con Ajustes"):
-            with st.spinner("Ensamblando..."):
-                m_litho = mesh.Mesh(st.session_state['litho_mesh'].data.copy())
-                m_text = mesh.Mesh(st.session_state['text_mesh'].data.copy())
-                
-                # APLICAR AJUSTES
-                m_litho.x += pos_x_ens 
-                m_litho.z += pos_z_ens
-                
-                combined = mesh.Mesh(np.concatenate([m_litho.data, m_text.data]))
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp:
-                    combined.save(tmp.name)
-                    stl_from_file(file_path=tmp.name, height=400, auto_rotate=True)
-                    with open(tmp.name, "rb") as f:
-                        st.download_button("📥 Descargar Ensamble Final", f, "ensamble_pro.stl", width='stretch')
+        px_off = st.slider("Ajuste Lateral (mm):", 0, 90, 45)
+        pz_off = st.slider("Ajuste Altura (mm):", -5, 5, 2)
+        
+        if st.button("🧩 Ver Ensamble", width='stretch'):
+            m_litho = mesh.Mesh(st.session_state['litho_mesh'].data.copy())
+            m_text = mesh.Mesh(st.session_state['text_mesh'].data.copy())
+            m_litho.x += px_off 
+            m_litho.z += pz_off
+            combined = mesh.Mesh(np.concatenate([m_litho.data, m_text.data]))
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.stl') as tmp_v:
+                combined.save(tmp_v.name)
+                stl_from_file(file_path=tmp_v.name, height=400, auto_rotate=True)
+                st.info("💡 Recuerda: Descarga las piezas por separado en las pestañas 1 y 2 para laminarlas a tu gusto.")
     else:
-        st.warning("⚠️ Primero genera los modelos en las pestañas 1 y 2.")
+        st.warning("⚠️ Genera la foto y la placa en sus respectivas pestañas para ver el ensamble.")
